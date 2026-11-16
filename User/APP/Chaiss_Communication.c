@@ -85,22 +85,38 @@ static void queue_tuning_ack(uint8_t status)
 
 static void parse_tuning_config(const uint8_t *frame)
 {
-    float requested_kp;
-    float requested_ki;
+    const uint8_t allowed_flags = CHAISS_TUNING_TELEMETRY_FLAG |
+                                  CHAISS_TUNING_GAIN_UPDATE_FLAG;
     uint8_t status = 1u;
 
-    requested_kp = read_float_le(&frame[3]);
-    requested_ki = read_float_le(&frame[7]);
-    if (((frame[2] & (uint8_t)(~CHAISS_TUNING_TELEMETRY_FLAG)) == 0u) &&
-        isfinite(requested_kp) && isfinite(requested_ki) &&
-        (requested_kp >= YAW_RATE_KP_MIN) &&
-        (requested_kp <= YAW_RATE_KP_MAX) &&
-        (requested_ki >= YAW_RATE_KI_MIN) &&
-        (requested_ki <= YAW_RATE_KI_MAX))
+    if ((frame[2] & (uint8_t)(~allowed_flags)) == 0u)
     {
+        const uint8_t update_gains =
+            ((frame[2] & CHAISS_TUNING_GAIN_UPDATE_FLAG) != 0u) ? 1u : 0u;
+        float requested_kp = yaw_rate_kp;
+        float requested_ki = yaw_rate_ki;
+
+        if (update_gains != 0u)
+        {
+            requested_kp = read_float_le(&frame[3]);
+            requested_ki = read_float_le(&frame[7]);
+            if (!isfinite(requested_kp) || !isfinite(requested_ki) ||
+                (requested_kp < YAW_RATE_KP_MIN) ||
+                (requested_kp > YAW_RATE_KP_MAX) ||
+                (requested_ki < YAW_RATE_KI_MIN) ||
+                (requested_ki > YAW_RATE_KI_MAX))
+            {
+                queue_tuning_ack(status);
+                return;
+            }
+        }
+
         yaw_rate_config_version++;
-        yaw_rate_kp = requested_kp;
-        yaw_rate_ki = requested_ki;
+        if (update_gains != 0u)
+        {
+            yaw_rate_kp = requested_kp;
+            yaw_rate_ki = requested_ki;
+        }
         yaw_rate_telemetry_enabled =
             ((frame[2] & CHAISS_TUNING_TELEMETRY_FLAG) != 0u) ? 1u : 0u;
         yaw_rate_tuning_last_ms = HAL_GetTick();
