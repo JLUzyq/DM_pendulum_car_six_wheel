@@ -85,24 +85,9 @@ static void queue_tuning_ack(uint8_t status)
 
 static void parse_tuning_config(const uint8_t *frame)
 {
-    uint16_t received_crc;
     float requested_kp;
     float requested_ki;
     uint8_t status = 1u;
-
-    if (frame[1] != CHAISS_TUNING_TYPE_CONFIG)
-    {
-        g_chaiss_communication.invalid_frame_count++;
-        return;
-    }
-
-    received_crc = (uint16_t)frame[11] |
-                   ((uint16_t)frame[12] << 8u);
-    if (received_crc != tuning_crc16(&frame[1], 10u))
-    {
-        g_chaiss_communication.invalid_frame_count++;
-        return;
-    }
 
     requested_kp = read_float_le(&frame[3]);
     requested_ki = read_float_le(&frame[7]);
@@ -213,23 +198,53 @@ static void parse_stream(void)
             return;
         }
 
-        if (((stream_buffer[0] == CHAISS_FRAME_HEAD) &&
-             (stream_buffer[CHAISS_FRAME_SIZE - 1u] != CHAISS_FRAME_TAIL)) ||
-            ((stream_buffer[0] == CHAISS_TUNING_FRAME_HEAD) &&
-             (stream_buffer[CHAISS_TUNING_FRAME_SIZE - 1u] !=
-              CHAISS_TUNING_FRAME_TAIL)))
-        {
-            remove_stream_prefix(1u);
-            g_chaiss_communication.invalid_frame_count++;
-            continue;
-        }
-
         if (stream_buffer[0] == CHAISS_TUNING_FRAME_HEAD)
         {
-            parse_tuning_config(stream_buffer);
+            uint8_t type = stream_buffer[1];
+            uint16_t received_crc = (uint16_t)stream_buffer[11] |
+                                    ((uint16_t)stream_buffer[12] << 8u);
+
+            if (stream_buffer[CHAISS_TUNING_FRAME_SIZE - 1u] !=
+                CHAISS_TUNING_FRAME_TAIL)
+            {
+                remove_stream_prefix(1u);
+                g_chaiss_communication.invalid_frame_count++;
+                continue;
+            }
+
+            if (received_crc != tuning_crc16(&stream_buffer[1], 10u))
+            {
+                /* Keep scanning: a valid frame may begin inside this payload. */
+                remove_stream_prefix(1u);
+                g_chaiss_communication.invalid_frame_count++;
+                continue;
+            }
+
+            if (type == CHAISS_TUNING_TYPE_CONFIG)
+            {
+                parse_tuning_config(stream_buffer);
+            }
+            else if ((type != CHAISS_TUNING_TYPE_TELEMETRY) &&
+                     (type != CHAISS_TUNING_TYPE_CONFIG_ACK))
+            {
+                /* Unknown type is malformed; retry alignment after one byte. */
+                remove_stream_prefix(1u);
+                g_chaiss_communication.invalid_frame_count++;
+                continue;
+            }
+            else
+            {
+                /* Known MCU-to-host frame received inbound; discard as a whole. */
+            }
         }
         else
         {
+            if (stream_buffer[CHAISS_FRAME_SIZE - 1u] != CHAISS_FRAME_TAIL)
+            {
+                remove_stream_prefix(1u);
+                g_chaiss_communication.invalid_frame_count++;
+                continue;
+            }
             parse_legacy_command(stream_buffer);
         }
 
