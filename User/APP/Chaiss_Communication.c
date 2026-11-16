@@ -16,6 +16,7 @@ static volatile uint8_t yaw_rate_config_version;
 static volatile uint8_t yaw_rate_telemetry_enabled;
 static volatile uint32_t yaw_rate_tuning_last_ms;
 static volatile uint8_t tuning_ack_pending;
+static volatile uint8_t tuning_ack_type;
 static volatile uint8_t tuning_ack_status;
 static volatile float tuning_ack_kp;
 static volatile float tuning_ack_ki;
@@ -74,8 +75,9 @@ static void build_tuning_frame_crc(uint8_t *frame)
     frame[13] = CHAISS_TUNING_FRAME_TAIL;
 }
 
-static void queue_tuning_ack(uint8_t status)
+static void queue_tuning_ack(uint8_t type, uint8_t status)
 {
+    tuning_ack_type = type;
     tuning_ack_status = status;
     tuning_ack_kp = yaw_rate_kp;
     tuning_ack_ki = yaw_rate_ki;
@@ -86,45 +88,57 @@ static void queue_tuning_ack(uint8_t status)
 static void parse_tuning_config(const uint8_t *frame)
 {
     const uint8_t allowed_flags = CHAISS_TUNING_TELEMETRY_FLAG |
-                                  CHAISS_TUNING_GAIN_UPDATE_FLAG;
-    uint8_t status = 1u;
+                                  CHAISS_TUNING_GAIN_UPDATE_FLAG |
+                                  CHAISS_TUNING_QUERY_GAINS_FLAG;
+    const uint8_t update_gains =
+        ((frame[2] & CHAISS_TUNING_GAIN_UPDATE_FLAG) != 0u) ? 1u : 0u;
+    const uint8_t query_gains =
+        ((frame[2] & CHAISS_TUNING_QUERY_GAINS_FLAG) != 0u) ? 1u : 0u;
 
-    if ((frame[2] & (uint8_t)(~allowed_flags)) == 0u)
+    if ((frame[2] & (uint8_t)(~allowed_flags)) != 0u)
     {
-        const uint8_t update_gains =
-            ((frame[2] & CHAISS_TUNING_GAIN_UPDATE_FLAG) != 0u) ? 1u : 0u;
-        float requested_kp = yaw_rate_kp;
-        float requested_ki = yaw_rate_ki;
+        g_chaiss_communication.invalid_frame_count++;
+        return;
+    }
 
-        if (update_gains != 0u)
+    if (update_gains != 0u)
+    {
+        const float requested_kp = read_float_le(&frame[3]);
+        const float requested_ki = read_float_le(&frame[7]);
+
+        if (!isfinite(requested_kp) || !isfinite(requested_ki) ||
+            (requested_kp < YAW_RATE_KP_MIN) ||
+            (requested_kp > YAW_RATE_KP_MAX) ||
+            (requested_ki < YAW_RATE_KI_MIN) ||
+            (requested_ki > YAW_RATE_KI_MAX))
         {
-            requested_kp = read_float_le(&frame[3]);
-            requested_ki = read_float_le(&frame[7]);
-            if (!isfinite(requested_kp) || !isfinite(requested_ki) ||
-                (requested_kp < YAW_RATE_KP_MIN) ||
-                (requested_kp > YAW_RATE_KP_MAX) ||
-                (requested_ki < YAW_RATE_KI_MIN) ||
-                (requested_ki > YAW_RATE_KI_MAX))
-            {
-                queue_tuning_ack(status);
-                return;
-            }
+            queue_tuning_ack(CHAISS_TUNING_TYPE_CONFIG_ACK, 1u);
+            return;
         }
 
         yaw_rate_config_version++;
-        if (update_gains != 0u)
-        {
-            yaw_rate_kp = requested_kp;
-            yaw_rate_ki = requested_ki;
-        }
+        yaw_rate_kp = requested_kp;
+        yaw_rate_ki = requested_ki;
         yaw_rate_telemetry_enabled =
             ((frame[2] & CHAISS_TUNING_TELEMETRY_FLAG) != 0u) ? 1u : 0u;
         yaw_rate_tuning_last_ms = HAL_GetTick();
         yaw_rate_config_version++;
-        status = 0u;
+
+        queue_tuning_ack(CHAISS_TUNING_TYPE_CONFIG_ACK, 0u);
+        return;
     }
 
-    queue_tuning_ack(status);
+    /* Query is a read-only request; ordinary heartbeat/toggle frames stay quiet. */
+    yaw_rate_config_version++;
+    yaw_rate_telemetry_enabled =
+        ((frame[2] & CHAISS_TUNING_TELEMETRY_FLAG) != 0u) ? 1u : 0u;
+    yaw_rate_tuning_last_ms = HAL_GetTick();
+    yaw_rate_config_version++;
+
+    if (query_gains != 0u)
+    {
+        queue_tuning_ack(CHAISS_TUNING_TYPE_GAIN_QUERY, 0u);
+    }
 }
 
 static void parse_legacy_command(const uint8_t *frame)
@@ -241,7 +255,8 @@ static void parse_stream(void)
                 parse_tuning_config(stream_buffer);
             }
             else if ((type != CHAISS_TUNING_TYPE_TELEMETRY) &&
-                     (type != CHAISS_TUNING_TYPE_CONFIG_ACK))
+                     (type != CHAISS_TUNING_TYPE_CONFIG_ACK) &&
+                     (type != CHAISS_TUNING_TYPE_GAIN_QUERY))
             {
                 /* Unknown type is malformed; retry alignment after one byte. */
                 remove_stream_prefix(1u);
@@ -309,6 +324,7 @@ void Chaiss_Communication_Init(void)
     yaw_rate_telemetry_enabled = 0u;
     yaw_rate_tuning_last_ms = 0u;
     tuning_ack_pending = 0u;
+    tuning_ack_type = CHAISS_TUNING_TYPE_CONFIG_ACK;
     tuning_ack_status = 0u;
     tuning_ack_kp = YAW_RATE_KP;
     tuning_ack_ki = YAW_RATE_KI;
@@ -450,17 +466,19 @@ void Chaiss_Communication_ProcessTx(uint32_t now_ms,
     if (tuning_ack_pending != 0u)
     {
         uint8_t ack_generation;
+        uint8_t ack_type;
         uint8_t ack_status;
         float ack_kp;
         float ack_ki;
 
         ack_generation = tuning_ack_generation;
+        ack_type = tuning_ack_type;
         ack_status = tuning_ack_status;
         ack_kp = tuning_ack_kp;
         ack_ki = tuning_ack_ki;
 
         tuning_ack_tx[0] = CHAISS_TUNING_FRAME_HEAD;
-        tuning_ack_tx[1] = CHAISS_TUNING_TYPE_CONFIG_ACK;
+        tuning_ack_tx[1] = ack_type;
         tuning_ack_tx[2] = ack_status;
         write_float_le(&tuning_ack_tx[3], ack_kp);
         write_float_le(&tuning_ack_tx[7], ack_ki);
