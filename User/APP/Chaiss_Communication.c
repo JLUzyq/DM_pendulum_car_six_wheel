@@ -5,6 +5,16 @@
 #include "string.h"
 #include "math.h"
 
+#define CHAISS_TUNING_RESPONSE_QUEUE_CAPACITY (4u)
+
+typedef struct
+{
+    uint8_t type;
+    uint8_t status;
+    float kp;
+    float ki;
+} tuning_response_t;
+
 volatile Chaiss_Communication_t g_chaiss_communication;
 
 static uint8_t uart1_rx_dma[CHAISS_RX_DMA_SIZE];
@@ -15,12 +25,11 @@ static volatile float yaw_rate_ki = YAW_RATE_KI;
 static volatile uint8_t yaw_rate_config_version;
 static volatile uint8_t yaw_rate_telemetry_enabled;
 static volatile uint32_t yaw_rate_tuning_last_ms;
-static volatile uint8_t tuning_ack_pending;
-static volatile uint8_t tuning_ack_type;
-static volatile uint8_t tuning_ack_status;
-static volatile float tuning_ack_kp;
-static volatile float tuning_ack_ki;
-static volatile uint8_t tuning_ack_generation;
+static volatile tuning_response_t tuning_response_queue[
+    CHAISS_TUNING_RESPONSE_QUEUE_CAPACITY];
+static volatile uint8_t tuning_response_head;
+static volatile uint8_t tuning_response_tail;
+static volatile uint8_t tuning_response_count;
 static uint8_t tuning_ack_tx[CHAISS_TUNING_FRAME_SIZE];
 static uint8_t tuning_telemetry_tx[CHAISS_TUNING_FRAME_SIZE];
 static uint8_t tuning_telemetry_sequence;
@@ -77,12 +86,63 @@ static void build_tuning_frame_crc(uint8_t *frame)
 
 static void queue_tuning_ack(uint8_t type, uint8_t status)
 {
-    tuning_ack_type = type;
-    tuning_ack_status = status;
-    tuning_ack_kp = yaw_rate_kp;
-    tuning_ack_ki = yaw_rate_ki;
-    tuning_ack_generation++;
-    tuning_ack_pending = 1u;
+    uint8_t head;
+
+    if (tuning_response_count >= CHAISS_TUNING_RESPONSE_QUEUE_CAPACITY)
+    {
+        /* Queue overflow deterministically drops the newest response. */
+        return;
+    }
+
+    head = tuning_response_head;
+    tuning_response_queue[head].type = type;
+    tuning_response_queue[head].status = status;
+    tuning_response_queue[head].kp = yaw_rate_kp;
+    tuning_response_queue[head].ki = yaw_rate_ki;
+    tuning_response_head = (uint8_t)((head + 1u) %
+                                      CHAISS_TUNING_RESPONSE_QUEUE_CAPACITY);
+    tuning_response_count++;
+}
+
+static uint8_t peek_tuning_response(tuning_response_t *response)
+{
+    uint8_t available = 0u;
+    uint32_t primask = __get_PRIMASK();
+
+    __disable_irq();
+    if (tuning_response_count != 0u)
+    {
+        const uint8_t tail = tuning_response_tail;
+        response->type = tuning_response_queue[tail].type;
+        response->status = tuning_response_queue[tail].status;
+        response->kp = tuning_response_queue[tail].kp;
+        response->ki = tuning_response_queue[tail].ki;
+        available = 1u;
+    }
+    if (primask == 0u)
+    {
+        __enable_irq();
+    }
+
+    return available;
+}
+
+static void consume_tuning_response(void)
+{
+    uint32_t primask = __get_PRIMASK();
+
+    __disable_irq();
+    if (tuning_response_count != 0u)
+    {
+        tuning_response_tail = (uint8_t)(
+            (tuning_response_tail + 1u) %
+            CHAISS_TUNING_RESPONSE_QUEUE_CAPACITY);
+        tuning_response_count--;
+    }
+    if (primask == 0u)
+    {
+        __enable_irq();
+    }
 }
 
 static void parse_tuning_config(const uint8_t *frame)
@@ -323,12 +383,9 @@ void Chaiss_Communication_Init(void)
     yaw_rate_config_version = 0u;
     yaw_rate_telemetry_enabled = 0u;
     yaw_rate_tuning_last_ms = 0u;
-    tuning_ack_pending = 0u;
-    tuning_ack_type = CHAISS_TUNING_TYPE_CONFIG_ACK;
-    tuning_ack_status = 0u;
-    tuning_ack_kp = YAW_RATE_KP;
-    tuning_ack_ki = YAW_RATE_KI;
-    tuning_ack_generation = 0u;
+    tuning_response_head = 0u;
+    tuning_response_tail = 0u;
+    tuning_response_count = 0u;
     tuning_telemetry_sequence = 0u;
     tuning_last_telemetry_ms = HAL_GetTick();
 
@@ -463,43 +520,26 @@ void Chaiss_Communication_ProcessTx(uint32_t now_ms,
         return;
     }
 
-    if (tuning_ack_pending != 0u)
     {
-        uint8_t ack_generation;
-        uint8_t ack_type;
-        uint8_t ack_status;
-        float ack_kp;
-        float ack_ki;
+        tuning_response_t response;
 
-        ack_generation = tuning_ack_generation;
-        ack_type = tuning_ack_type;
-        ack_status = tuning_ack_status;
-        ack_kp = tuning_ack_kp;
-        ack_ki = tuning_ack_ki;
-
-        tuning_ack_tx[0] = CHAISS_TUNING_FRAME_HEAD;
-        tuning_ack_tx[1] = ack_type;
-        tuning_ack_tx[2] = ack_status;
-        write_float_le(&tuning_ack_tx[3], ack_kp);
-        write_float_le(&tuning_ack_tx[7], ack_ki);
-        build_tuning_frame_crc(tuning_ack_tx);
-
-        tx_status = HAL_UART_Transmit_DMA(&huart1, tuning_ack_tx,
-                                         CHAISS_TUNING_FRAME_SIZE);
-        if (tx_status == HAL_OK)
+        if (peek_tuning_response(&response) != 0u)
         {
-            uint32_t primask = __get_PRIMASK();
-            __disable_irq();
-            if (tuning_ack_generation == ack_generation)
+            tuning_ack_tx[0] = CHAISS_TUNING_FRAME_HEAD;
+            tuning_ack_tx[1] = response.type;
+            tuning_ack_tx[2] = response.status;
+            write_float_le(&tuning_ack_tx[3], response.kp);
+            write_float_le(&tuning_ack_tx[7], response.ki);
+            build_tuning_frame_crc(tuning_ack_tx);
+
+            tx_status = HAL_UART_Transmit_DMA(&huart1, tuning_ack_tx,
+                                             CHAISS_TUNING_FRAME_SIZE);
+            if (tx_status == HAL_OK)
             {
-                tuning_ack_pending = 0u;
+                consume_tuning_response();
             }
-            if (primask == 0u)
-            {
-                __enable_irq();
-            }
+            return;
         }
-        return;
     }
 
     if ((config.telemetry_enabled == 0u) ||
