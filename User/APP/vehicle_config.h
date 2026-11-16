@@ -148,6 +148,10 @@ static const suspension_motor_config_t g_suspension_motor_config[SUSPENSION_MOTO
  */
 #define YAW_RATE_KP                    (0.30f)
 #define YAW_RATE_KI                    (0.00f)
+#define YAW_RATE_KP_MIN                (0.0f)
+#define YAW_RATE_KP_MAX                (2.0f)
+#define YAW_RATE_KI_MIN                (0.0f)
+#define YAW_RATE_KI_MAX                (1.0f)
 #define YAW_RATE_INTEGRAL_LIMIT        (0.50f)
 #define YAW_RATE_CORRECTION_MAX_RADPS  (0.80f)
 #define IMU_YAW_RATE_SIGN              (+1.0f) /* Set -1 if IMU Z sign is opposite. */
