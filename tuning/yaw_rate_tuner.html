@@ -245,6 +245,7 @@
       const TYPE_TELEMETRY = 0x81;
       const TYPE_ACK = 0x82;
       const TELEMETRY_FLAG = 0x01;
+      const GAIN_UPDATE_FLAG = 0x02;
       const CHART_WINDOW_MS = 10000;
       const HEARTBEAT_MS = 500;
 
@@ -311,11 +312,12 @@
         return frame;
       }
 
-      function configFrame(enableTelemetry, kp, ki) {
+      function configFrame(enableTelemetry, kp, ki, updateGains = false) {
         const frame = new Uint8Array(FRAME_SIZE);
         frame[0] = FRAME_HEAD;
         frame[1] = TYPE_CONFIG;
-        frame[2] = enableTelemetry ? TELEMETRY_FLAG : 0;
+        frame[2] = (enableTelemetry ? TELEMETRY_FLAG : 0) |
+          (updateGains ? GAIN_UPDATE_FLAG : 0);
         writeFloatLE(frame, 3, kp);
         writeFloatLE(frame, 7, ki);
         return appendCrcAndTail(frame);
@@ -363,9 +365,9 @@
         $("gainState").innerHTML = `下位机已生效：<strong>Kp ${lastAckedGains.kp.toFixed(3)} · Ki ${lastAckedGains.ki.toFixed(3)}</strong>`;
       }
 
-      function queueConfig(enableTelemetry, gains = activeGains) {
+      function queueConfig(enableTelemetry, gains = activeGains, updateGains = false) {
         if (!writer || !port) return Promise.reject(new Error("串口未连接。"));
-        const frame = configFrame(enableTelemetry, gains.kp, gains.ki);
+        const frame = configFrame(enableTelemetry, gains.kp, gains.ki, updateGains);
         const activeWriter = writer;
         const activePort = port;
         const operation = writeQueue.then(async () => {
@@ -742,7 +744,7 @@
           activeGains = gains;
           awaitingUserAck = true;
           setNotice(`正在应用 Kp=${gains.kp.toFixed(3)}、Ki=${gains.ki.toFixed(3)}，等待下位机确认。`, false);
-          await queueConfig(telemetryDesired, gains);
+          await queueConfig(telemetryDesired, gains, true);
         } catch (error) {
           setNotice(error.message, true);
         }
