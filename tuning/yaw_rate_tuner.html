@@ -244,10 +244,13 @@
       const TYPE_CONFIG = 0x01;
       const TYPE_TELEMETRY = 0x81;
       const TYPE_ACK = 0x82;
+      const TYPE_GAIN_QUERY = 0x83;
       const TELEMETRY_FLAG = 0x01;
       const GAIN_UPDATE_FLAG = 0x02;
+      const QUERY_GAINS_FLAG = 0x04;
       const CHART_WINDOW_MS = 10000;
       const HEARTBEAT_MS = 500;
+      const ACK_TIMEOUT_MS = 1500;
 
       const $ = (id) => document.getElementById(id);
       const chart = $("chart");
@@ -267,10 +270,11 @@
       let readTask = null;
       let writeQueue = Promise.resolve();
       let heartbeatTimer = null;
+      let ackTimeoutTimer = null;
       let disconnecting = false;
       let telemetryDesired = false;
       let telemetryRequestId = 0;
-      let awaitingUserAck = false;
+      let pendingAckType = null;
       let chartPaused = false;
       let rxBuffer = new Uint8Array(0);
       let samples = [];
@@ -312,12 +316,13 @@
         return frame;
       }
 
-      function configFrame(enableTelemetry, kp, ki, updateGains = false) {
+      function configFrame(enableTelemetry, kp, ki, updateGains = false, queryGains = false) {
         const frame = new Uint8Array(FRAME_SIZE);
         frame[0] = FRAME_HEAD;
         frame[1] = TYPE_CONFIG;
         frame[2] = (enableTelemetry ? TELEMETRY_FLAG : 0) |
-          (updateGains ? GAIN_UPDATE_FLAG : 0);
+          (updateGains ? GAIN_UPDATE_FLAG : 0) |
+          (queryGains ? QUERY_GAINS_FLAG : 0);
         writeFloatLE(frame, 3, kp);
         writeFloatLE(frame, 7, ki);
         return appendCrcAndTail(frame);
@@ -349,12 +354,37 @@
       }
 
       function updateControls() {
-        const connected = Boolean(port);
-        connectButton.disabled = connected;
+        const hasPort = Boolean(port);
+        const connected = hasPort && !disconnecting;
+        const waitingAck = pendingAckType !== null;
+        connectButton.disabled = hasPort || disconnecting;
         disconnectButton.disabled = !connected;
-        telemetryToggle.disabled = !connected;
-        applyButton.disabled = !connected;
+        telemetryToggle.disabled = !connected || waitingAck;
+        applyButton.disabled = !connected || waitingAck;
         pauseButton.disabled = !connected || telemetrySampleCount === 0;
+      }
+
+      function beginAckWait(type, message) {
+        window.clearTimeout(ackTimeoutTimer);
+        pendingAckType = type;
+        updateControls();
+        setNotice(message, false);
+        ackTimeoutTimer = window.setTimeout(() => {
+          if (pendingAckType !== type) return;
+          pendingAckType = null;
+          ackTimeoutTimer = null;
+          updateControls();
+          setNotice("等待下位机确认超时；当前增益状态未更新。", true);
+        }, ACK_TIMEOUT_MS);
+      }
+
+      function finishAckWait(type) {
+        if (pendingAckType !== type) return false;
+        pendingAckType = null;
+        window.clearTimeout(ackTimeoutTimer);
+        ackTimeoutTimer = null;
+        updateControls();
+        return true;
       }
 
       function updateGainState() {
@@ -365,9 +395,9 @@
         $("gainState").innerHTML = `下位机已生效：<strong>Kp ${lastAckedGains.kp.toFixed(3)} · Ki ${lastAckedGains.ki.toFixed(3)}</strong>`;
       }
 
-      function queueConfig(enableTelemetry, gains = activeGains, updateGains = false) {
+      function queueConfig(enableTelemetry, gains = activeGains, updateGains = false, queryGains = false) {
         if (!writer || !port) return Promise.reject(new Error("串口未连接。"));
-        const frame = configFrame(enableTelemetry, gains.kp, gains.ki, updateGains);
+        const frame = configFrame(enableTelemetry, gains.kp, gains.ki, updateGains, queryGains);
         const activeWriter = writer;
         const activePort = port;
         const operation = writeQueue.then(async () => {
@@ -442,24 +472,22 @@
           return;
         }
 
-        if (type === TYPE_ACK) {
+        if (type === TYPE_ACK || type === TYPE_GAIN_QUERY) {
+          if (type !== pendingAckType) return;
           const status = frame[2];
           const kp = readFloatLE(frame, 3);
           const ki = readFloatLE(frame, 7);
           if (!Number.isFinite(kp) || !Number.isFinite(ki)) return;
 
+          finishAckWait(type);
           lastAckedGains = { kp, ki };
           activeGains = { kp, ki };
           if (status === 0) {
             kpInput.value = kp.toFixed(3);
             kiInput.value = ki.toFixed(3);
             updateGainState();
-            if (awaitingUserAck) {
-              awaitingUserAck = false;
-              setNotice("下位机已确认参数。", false);
-            } else if (notice.classList.contains("error")) {
-              setNotice("", false);
-            }
+            setNotice(type === TYPE_GAIN_QUERY ?
+              "已读取下位机当前 Kp/Ki。" : "下位机已确认新 Kp/Ki。", false);
           } else {
             kpInput.value = lastAckedGains.kp.toFixed(3);
             kiInput.value = lastAckedGains.ki.toFixed(3);
@@ -493,7 +521,7 @@
           }
 
           const type = rxBuffer[1];
-          if (type !== TYPE_TELEMETRY && type !== TYPE_ACK) {
+          if (type !== TYPE_TELEMETRY && type !== TYPE_ACK && type !== TYPE_GAIN_QUERY) {
             rxBuffer = rxBuffer.slice(1);
             continue;
           }
@@ -547,7 +575,7 @@
           rxBuffer = new Uint8Array(0);
           telemetryDesired = false;
           telemetryRequestId++;
-          awaitingUserAck = false;
+          finishAckWait(pendingAckType);
           telemetryToggle.checked = false;
           lastTelemetryAt = 0;
           lastAckedGains = null;
@@ -588,7 +616,7 @@
         telemetryRequestId++;
         stopHeartbeat();
         telemetryDesired = false;
-        awaitingUserAck = false;
+        finishAckWait(pendingAckType);
         telemetryToggle.checked = false;
         const activePort = port;
         const activeReader = reader;
@@ -739,13 +767,14 @@
       connectButton.addEventListener("click", () => { void connectPort(); });
       disconnectButton.addEventListener("click", () => { void disconnectPort(true); });
       applyButton.addEventListener("click", async () => {
+        if (pendingAckType !== null) return;
         try {
           const gains = gainsFromInputs();
           activeGains = gains;
-          awaitingUserAck = true;
-          setNotice(`正在应用 Kp=${gains.kp.toFixed(3)}、Ki=${gains.ki.toFixed(3)}，等待下位机确认。`, false);
+          beginAckWait(TYPE_ACK, `正在应用 Kp=${gains.kp.toFixed(3)}、Ki=${gains.ki.toFixed(3)}，等待下位机确认。`);
           await queueConfig(telemetryDesired, gains, true);
         } catch (error) {
+          finishAckWait(TYPE_ACK);
           setNotice(error.message, true);
         }
       });
@@ -754,28 +783,28 @@
           telemetryToggle.checked = false;
           return;
         }
+        if (pendingAckType !== null) {
+          telemetryToggle.checked = telemetryDesired;
+          return;
+        }
         const requestId = ++telemetryRequestId;
         try {
           telemetryDesired = telemetryToggle.checked;
           if (telemetryDesired) {
-            const gains = gainsFromInputs();
-            activeGains = gains;
-            awaitingUserAck = true;
-            setNotice("正在开启遥测并发送 PI 参数，等待下位机确认。", false);
-            await queueConfig(true, gains);
+            beginAckWait(TYPE_GAIN_QUERY, "正在开启遥测并读取下位机当前 Kp/Ki，等待确认。");
+            await queueConfig(true, activeGains, false, true);
             if (requestId !== telemetryRequestId || !telemetryDesired) return;
             startHeartbeat();
             $("telemetryState").textContent = "正在等待遥测数据";
           } else {
             stopHeartbeat();
-            awaitingUserAck = true;
-            setNotice("正在关闭遥测，等待下位机确认。", false);
             await queueConfig(false, activeGains);
             if (requestId !== telemetryRequestId || telemetryDesired) return;
             $("telemetryState").textContent = "遥测已关闭";
           }
         } catch (error) {
           if (requestId !== telemetryRequestId) return;
+          finishAckWait(TYPE_GAIN_QUERY);
           telemetryDesired = false;
           telemetryToggle.checked = false;
           stopHeartbeat();
