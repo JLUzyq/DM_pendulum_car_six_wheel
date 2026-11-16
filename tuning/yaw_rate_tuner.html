@@ -1,0 +1,829 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>偏航角速度 PI 调参</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b111b;
+      --panel: #121c2a;
+      --panel-raised: #172334;
+      --line: #26364b;
+      --muted: #91a0b5;
+      --text: #e8eef7;
+      --blue: #55b7ff;
+      --green: #49ddb0;
+      --amber: #ffc76a;
+      --red: #ff7f87;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      min-height: 100vh;
+      background: radial-gradient(ellipse at 50% -20%, #1a2c40 0, var(--bg) 55%);
+      color: var(--text);
+      font: 14px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+
+    button, input { font: inherit; }
+    button {
+      border: 1px solid #365273;
+      border-radius: 9px;
+      padding: 10px 14px;
+      color: #eaf5ff;
+      background: #173653;
+      cursor: pointer;
+      transition: background .15s ease, border-color .15s ease, transform .15s ease;
+    }
+    button:hover:not(:disabled) { background: #1c496f; border-color: #4f8fc3; }
+    button:active:not(:disabled) { transform: translateY(1px); }
+    button:disabled { cursor: not-allowed; opacity: .45; }
+    button.secondary { color: #c2d0e1; background: #182536; border-color: #33445b; }
+    button.tertiary { color: #aebbd0; background: transparent; border-color: #33445b; }
+    button.danger { color: #ffd9dc; background: #3a2029; border-color: #68343d; }
+
+    .shell { width: min(1200px, calc(100% - 40px)); margin: 0 auto; padding: 34px 0 26px; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 22px; }
+    .eyebrow { margin: 0 0 5px; color: #86a1bd; font-size: 11px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; }
+    h1 { margin: 0; font-size: clamp(22px, 3vw, 30px); font-weight: 680; letter-spacing: -.035em; }
+    .subtitle { margin: 7px 0 0; color: var(--muted); font-size: 13px; }
+    .connection { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+    .status { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 7px 12px; border: 1px solid var(--line); border-radius: 999px; color: #afbdd0; background: #101a27; font-size: 12px; white-space: nowrap; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #718096; box-shadow: 0 0 0 3px #71809620; }
+    .status.connected { color: #a6f3d7; border-color: #28624f; background: #10251f; }
+    .status.connected .dot { background: var(--green); box-shadow: 0 0 0 3px #49ddb022; }
+    .status.error { color: #ffc4c8; border-color: #67343d; background: #2b171c; }
+    .status.error .dot { background: var(--red); }
+
+    .panel { border: 1px solid var(--line); border-radius: 15px; background: linear-gradient(145deg, #141f2e, #101925); box-shadow: 0 18px 48px #00000024; }
+    .readouts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 14px; }
+    .readout { min-height: 102px; padding: 17px 18px; border: 1px solid var(--line); border-radius: 13px; background: linear-gradient(135deg, #162437, #111b29); }
+    .readout-label { display: flex; align-items: center; gap: 8px; color: #a7b7cb; font-size: 12px; }
+    .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .value { margin-top: 9px; color: #f0f5fb; font: 600 clamp(24px, 4vw, 32px)/1.1 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: -.05em; font-variant-numeric: tabular-nums; }
+    .unit { margin-left: 8px; color: #91a0b5; font: 12px/1 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0; }
+
+    .chart-panel { padding: 18px 20px 14px; }
+    .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 10px; }
+    .section-heading h2 { margin: 0; font-size: 15px; font-weight: 620; }
+    .chart-legend { display: flex; align-items: center; gap: 18px; color: #a3b2c6; font-size: 11px; }
+    .chart-legend span { display: inline-flex; align-items: center; gap: 7px; }
+    .chart-wrap { height: 300px; min-height: 210px; }
+    canvas { display: block; width: 100%; height: 100%; }
+    .chart-foot { display: flex; justify-content: space-between; gap: 10px; margin-top: 7px; color: #798aa0; font-size: 11px; }
+
+    .bottom-grid { display: grid; grid-template-columns: minmax(270px, .86fr) minmax(320px, 1.4fr); gap: 14px; margin-top: 14px; }
+    .controls-panel, .tuning-panel { padding: 18px 20px; }
+    .panel-title { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
+    .panel-title h2 { margin: 0; font-size: 15px; font-weight: 620; }
+    .small-copy { color: #8595aa; font-size: 11px; }
+    .gain-row { display: grid; grid-template-columns: 48px minmax(90px, 1fr) 42px; align-items: center; gap: 10px; margin: 12px 0; }
+    .gain-row label { color: #c8d4e3; font-weight: 600; }
+    .gain-row input[type="number"] { width: 100%; padding: 9px 10px; border: 1px solid #33445a; border-radius: 8px; outline: none; color: var(--text); background: #0d1622; font-variant-numeric: tabular-nums; }
+    .gain-row input:focus { border-color: #4a8dc4; box-shadow: 0 0 0 3px #55b7ff16; }
+    .gain-row .range { color: #8292a7; font-size: 11px; text-align: right; }
+    .gain-actions { display: flex; align-items: center; gap: 9px; margin-top: 15px; }
+    .gain-actions button { flex: 1; }
+    .gain-state { margin-top: 12px; color: #8595aa; font-size: 11px; }
+    .gain-state strong { color: #d8e4f2; font-weight: 600; }
+
+    .toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 50px; }
+    .toggle-title { color: #dbe6f3; font-size: 13px; font-weight: 600; }
+    .toggle-hint { margin-top: 3px; color: #8292a7; font-size: 11px; }
+    .switch { position: relative; flex: 0 0 auto; width: 46px; height: 26px; }
+    .switch input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+    .slider { position: absolute; inset: 0; border: 1px solid #435168; border-radius: 999px; background: #243044; cursor: pointer; transition: .2s; }
+    .slider::before { position: absolute; content: ""; width: 18px; height: 18px; left: 3px; top: 3px; border-radius: 50%; background: #a9b5c7; transition: .2s; }
+    .switch input:checked + .slider { border-color: #32896b; background: #1d624d; }
+    .switch input:checked + .slider::before { transform: translateX(20px); background: #c0ffe9; }
+    .switch input:focus-visible + .slider { outline: 2px solid var(--blue); outline-offset: 3px; }
+    .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .toolbar button { padding: 8px 11px; font-size: 12px; }
+    .tuning-divider { height: 1px; margin: 12px 0; background: #29394e; }
+    .telemetry-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #96a6ba; font-size: 11px; }
+    .telemetry-status strong { color: #cfdae8; font-weight: 550; }
+    .note { margin: 16px 2px 0; color: #79899e; font-size: 11px; line-height: 1.65; }
+    .notice { display: none; margin: 0 0 16px; padding: 11px 14px; border: 1px solid #664b28; border-radius: 10px; color: #f1d3a1; background: #302516; font-size: 12px; }
+    .notice.show { display: block; }
+    .notice.error { border-color: #66333a; color: #ffc2c6; background: #2b171b; }
+    .footer { display: flex; justify-content: space-between; gap: 16px; margin-top: 16px; color: #73839a; font-size: 10px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+
+    @media (max-width: 780px) {
+      .shell { width: min(100% - 24px, 620px); padding-top: 22px; }
+      header { align-items: flex-start; flex-direction: column; }
+      .connection { justify-content: flex-start; }
+      .bottom-grid { grid-template-columns: 1fr; }
+      .chart-wrap { height: 260px; }
+    }
+    @media (max-width: 480px) {
+      .readouts { gap: 7px; }
+      .readout { min-height: 88px; padding: 12px 10px; }
+      .readout-label { font-size: 10px; gap: 5px; }
+      .value { font-size: 22px; }
+      .unit { display: block; margin: 4px 0 0; font-size: 10px; }
+      .chart-panel, .controls-panel, .tuning-panel { padding: 15px 13px; }
+      .chart-wrap { height: 225px; }
+      .chart-legend { gap: 9px; }
+      .chart-legend span { gap: 5px; }
+      .footer { flex-direction: column; gap: 4px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <p class="eyebrow">CHASSIS · YAW RATE</p>
+        <h1>偏航角速度 PI 调参</h1>
+        <p class="subtitle">对比运动学理论目标与 IMU 实测角速度，观察软沙地上的转向跟踪表现。</p>
+      </div>
+      <div class="connection">
+        <div id="connectionStatus" class="status"><span class="dot"></span><span id="connectionLabel">未连接</span></div>
+        <button id="connectButton">连接串口</button>
+        <button id="disconnectButton" class="secondary" disabled>断开</button>
+      </div>
+    </header>
+
+    <div id="notice" class="notice" role="status"></div>
+
+    <section class="readouts" aria-label="实时角速度读数">
+      <article class="readout">
+        <div class="readout-label"><span class="legend-dot" style="background:var(--blue)"></span>理论角速度</div>
+        <div class="value"><span id="targetValue">—</span><span class="unit">rad/s</span></div>
+      </article>
+      <article class="readout">
+        <div class="readout-label"><span class="legend-dot" style="background:var(--green)"></span>IMU 实际角速度</div>
+        <div class="value"><span id="actualValue">—</span><span class="unit">rad/s</span></div>
+      </article>
+      <article class="readout">
+        <div class="readout-label"><span class="legend-dot" style="background:var(--amber)"></span>跟踪误差</div>
+        <div class="value"><span id="errorValue">—</span><span class="unit">rad/s</span></div>
+      </article>
+    </section>
+
+    <section class="panel chart-panel">
+      <div class="section-heading">
+        <h2>实时跟踪曲线</h2>
+        <div class="chart-legend" aria-label="曲线图例">
+          <span><i class="legend-dot" style="background:var(--blue)"></i>理论值</span>
+          <span><i class="legend-dot" style="background:var(--green)"></i>实际值</span>
+        </div>
+      </div>
+      <div class="chart-wrap"><canvas id="chart" aria-label="偏航角速度实时趋势图"></canvas></div>
+      <div class="chart-foot"><span>时间窗口 · 最近 10 秒</span><span>角速度 · rad/s</span></div>
+    </section>
+
+    <div class="bottom-grid">
+      <section class="panel controls-panel">
+        <div class="panel-title">
+          <h2>PI 参数</h2>
+          <span class="small-copy">在线生效 · RAM 保存</span>
+        </div>
+        <div class="gain-row">
+          <label for="kpInput">Kp</label>
+          <input id="kpInput" type="number" min="0" max="2" step="0.01" value="0.30" inputmode="decimal" aria-describedby="kpRange">
+          <span id="kpRange" class="range">0–2</span>
+        </div>
+        <div class="gain-row">
+          <label for="kiInput">Ki</label>
+          <input id="kiInput" type="number" min="0" max="1" step="0.01" value="0.00" inputmode="decimal" aria-describedby="kiRange">
+          <span id="kiRange" class="range">0–1</span>
+        </div>
+        <div class="gain-actions">
+          <button id="applyButton" disabled>应用参数</button>
+        </div>
+        <div id="gainState" class="gain-state">下位机已生效：<strong>尚未读取</strong></div>
+      </section>
+
+      <section class="panel tuning-panel">
+        <div class="panel-title">
+          <h2>调参遥测</h2>
+          <span class="small-copy">默认关闭</span>
+        </div>
+        <div class="toggle-row">
+          <div>
+            <div class="toggle-title">上传理论值与实际值</div>
+            <div class="toggle-hint">开启后下位机以约 20 Hz 上传</div>
+          </div>
+          <label class="switch" aria-label="开启偏航角速度遥测">
+            <input id="telemetryToggle" type="checkbox" disabled>
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="tuning-divider"></div>
+        <div class="toolbar">
+          <button id="pauseButton" class="secondary" disabled>暂停曲线</button>
+          <button id="clearButton" class="tertiary">清空</button>
+          <button id="csvButton" class="tertiary">导出 CSV</button>
+        </div>
+        <div class="tuning-divider"></div>
+        <div class="telemetry-status"><span>数据状态</span><strong id="telemetryState">等待串口连接</strong></div>
+        <p class="note">网页通过 USB 转串口直连下位机；调参时串口由 Chrome 独占，请关闭其他串口软件。页面不发送运动指令，请使用 SBUS 遥控车辆。</p>
+      </section>
+    </div>
+
+    <div class="footer">
+      <span>桌面 Chrome · 需要从 <span class="mono">localhost</span> 或 HTTPS 安全上下文打开</span>
+      <span>遥测开关关闭或心跳中断后，下位机停止上传</span>
+    </div>
+  </main>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const FRAME_HEAD = 0xC3;
+      const FRAME_TAIL = 0x3C;
+      const FRAME_SIZE = 14;
+      const TYPE_CONFIG = 0x01;
+      const TYPE_TELEMETRY = 0x81;
+      const TYPE_ACK = 0x82;
+      const TELEMETRY_FLAG = 0x01;
+      const CHART_WINDOW_MS = 10000;
+      const HEARTBEAT_MS = 500;
+
+      const $ = (id) => document.getElementById(id);
+      const chart = $("chart");
+      const ctx = chart.getContext("2d");
+      const kpInput = $("kpInput");
+      const kiInput = $("kiInput");
+      const telemetryToggle = $("telemetryToggle");
+      const connectButton = $("connectButton");
+      const disconnectButton = $("disconnectButton");
+      const applyButton = $("applyButton");
+      const pauseButton = $("pauseButton");
+      const notice = $("notice");
+
+      let port = null;
+      let reader = null;
+      let writer = null;
+      let readTask = null;
+      let writeQueue = Promise.resolve();
+      let heartbeatTimer = null;
+      let disconnecting = false;
+      let telemetryDesired = false;
+      let telemetryRequestId = 0;
+      let awaitingUserAck = false;
+      let chartPaused = false;
+      let rxBuffer = new Uint8Array(0);
+      let samples = [];
+      let lastAckedGains = null;
+      let latestTarget = null;
+      let latestActual = null;
+      let latestSequence = null;
+      let telemetrySampleCount = 0;
+      let lastTelemetryAt = 0;
+      let activeGains = { kp: 0.30, ki: 0.00 };
+      let recordedSamples = [];
+
+      function crc16(bytes) {
+        let crc = 0xFFFF;
+        for (const byte of bytes) {
+          crc ^= byte;
+          for (let bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? ((crc >>> 1) ^ 0xA001) : (crc >>> 1);
+          }
+        }
+        return crc & 0xFFFF;
+      }
+
+      function readFloatLE(frame, offset) {
+        return new DataView(frame.buffer, frame.byteOffset, frame.byteLength)
+          .getFloat32(offset, true);
+      }
+
+      function writeFloatLE(frame, offset, value) {
+        new DataView(frame.buffer, frame.byteOffset, frame.byteLength)
+          .setFloat32(offset, value, true);
+      }
+
+      function appendCrcAndTail(frame) {
+        const crc = crc16(frame.subarray(1, 11));
+        frame[11] = crc & 0xFF;
+        frame[12] = (crc >>> 8) & 0xFF;
+        frame[13] = FRAME_TAIL;
+        return frame;
+      }
+
+      function configFrame(enableTelemetry, kp, ki) {
+        const frame = new Uint8Array(FRAME_SIZE);
+        frame[0] = FRAME_HEAD;
+        frame[1] = TYPE_CONFIG;
+        frame[2] = enableTelemetry ? TELEMETRY_FLAG : 0;
+        writeFloatLE(frame, 3, kp);
+        writeFloatLE(frame, 7, ki);
+        return appendCrcAndTail(frame);
+      }
+
+      function gainsFromInputs() {
+        const kp = Number(kpInput.value);
+        const ki = Number(kiInput.value);
+        if (!Number.isFinite(kp) || kp < 0 || kp > 2) {
+          throw new Error("Kp 必须是 0 到 2 之间的有限数值。");
+        }
+        if (!Number.isFinite(ki) || ki < 0 || ki > 1) {
+          throw new Error("Ki 必须是 0 到 1 之间的有限数值。");
+        }
+        return { kp, ki };
+      }
+
+      function setNotice(message, isError = false) {
+        notice.textContent = message;
+        notice.classList.toggle("error", isError);
+        notice.classList.toggle("show", Boolean(message));
+      }
+
+      function setConnectionState(state, label) {
+        const status = $("connectionStatus");
+        status.classList.toggle("connected", state === "connected");
+        status.classList.toggle("error", state === "error");
+        $("connectionLabel").textContent = label;
+      }
+
+      function updateControls() {
+        const connected = Boolean(port);
+        connectButton.disabled = connected;
+        disconnectButton.disabled = !connected;
+        telemetryToggle.disabled = !connected;
+        applyButton.disabled = !connected;
+        pauseButton.disabled = !connected || telemetrySampleCount === 0;
+      }
+
+      function updateGainState() {
+        if (!lastAckedGains) {
+          $("gainState").innerHTML = "下位机已生效：<strong>尚未读取</strong>";
+          return;
+        }
+        $("gainState").innerHTML = `下位机已生效：<strong>Kp ${lastAckedGains.kp.toFixed(3)} · Ki ${lastAckedGains.ki.toFixed(3)}</strong>`;
+      }
+
+      function queueConfig(enableTelemetry, gains = activeGains) {
+        if (!writer || !port) return Promise.reject(new Error("串口未连接。"));
+        const frame = configFrame(enableTelemetry, gains.kp, gains.ki);
+        const activeWriter = writer;
+        const activePort = port;
+        const operation = writeQueue.then(async () => {
+          if (activePort !== port || activeWriter !== writer) {
+            throw new Error("串口连接已改变。");
+          }
+          await activeWriter.write(frame);
+        });
+        writeQueue = operation.catch((error) => {
+          if (activePort === port && !disconnecting) {
+            setNotice(`串口写入失败：${error.message}。遥测将在下位机心跳超时后停止。`, true);
+            window.setTimeout(() => { void disconnectPort(false); }, 0);
+          }
+          throw error;
+        });
+        return writeQueue;
+      }
+
+      function startHeartbeat() {
+        window.clearInterval(heartbeatTimer);
+        heartbeatTimer = window.setInterval(() => {
+          if (telemetryDesired && port) {
+            void queueConfig(true).catch(() => {});
+          }
+        }, HEARTBEAT_MS);
+      }
+
+      function stopHeartbeat() {
+        window.clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+
+      function updateReadouts(target, actual) {
+        $("targetValue").textContent = target.toFixed(3);
+        $("actualValue").textContent = actual.toFixed(3);
+        $("errorValue").textContent = (target - actual).toFixed(3);
+      }
+
+      function handleFrame(frame) {
+        const type = frame[1];
+        if (type === TYPE_TELEMETRY) {
+          if (!telemetryDesired) return;
+          const target = readFloatLE(frame, 3);
+          const actual = readFloatLE(frame, 7);
+          if (!Number.isFinite(target) || !Number.isFinite(actual)) return;
+
+          const now = performance.now();
+          latestTarget = target;
+          latestActual = actual;
+          latestSequence = frame[2];
+          lastTelemetryAt = now;
+          telemetrySampleCount++;
+          updateReadouts(target, actual);
+          $("telemetryState").textContent = `接收中 · ${telemetrySampleCount} 帧 · seq ${latestSequence}`;
+
+          const sample = {
+            time: now,
+            timestamp: new Date().toISOString(),
+            target,
+            actual,
+            error: target - actual
+          };
+          recordedSamples.push(sample);
+          if (recordedSamples.length > 72000) recordedSamples.shift();
+          if (!chartPaused) {
+            samples.push(sample);
+            const earliest = now - CHART_WINDOW_MS;
+            while (samples.length && samples[0].time < earliest) samples.shift();
+          }
+          updateControls();
+          drawChart();
+          return;
+        }
+
+        if (type === TYPE_ACK) {
+          const status = frame[2];
+          const kp = readFloatLE(frame, 3);
+          const ki = readFloatLE(frame, 7);
+          if (!Number.isFinite(kp) || !Number.isFinite(ki)) return;
+
+          lastAckedGains = { kp, ki };
+          activeGains = { kp, ki };
+          if (status === 0) {
+            kpInput.value = kp.toFixed(3);
+            kiInput.value = ki.toFixed(3);
+            updateGainState();
+            if (awaitingUserAck) {
+              awaitingUserAck = false;
+              setNotice("下位机已确认参数。", false);
+            } else if (notice.classList.contains("error")) {
+              setNotice("", false);
+            }
+          } else {
+            kpInput.value = lastAckedGains.kp.toFixed(3);
+            kiInput.value = lastAckedGains.ki.toFixed(3);
+            updateGainState();
+            setNotice("下位机拒绝了参数配置；输入值已恢复为上次确认值。", true);
+          }
+        }
+      }
+
+      function consumeBytes(chunk) {
+        const joined = new Uint8Array(rxBuffer.length + chunk.length);
+        joined.set(rxBuffer, 0);
+        joined.set(chunk, rxBuffer.length);
+        rxBuffer = joined;
+
+        while (rxBuffer.length > 0) {
+          const headerIndex = rxBuffer.indexOf(FRAME_HEAD);
+          if (headerIndex < 0) {
+            rxBuffer = new Uint8Array(0);
+            return;
+          }
+          if (headerIndex > 0) rxBuffer = rxBuffer.slice(headerIndex);
+          if (rxBuffer.length < FRAME_SIZE) return;
+
+          const validTail = rxBuffer[13] === FRAME_TAIL;
+          const expectedCrc = crc16(rxBuffer.subarray(1, 11));
+          const receivedCrc = rxBuffer[11] | (rxBuffer[12] << 8);
+          if (!validTail || expectedCrc !== receivedCrc) {
+            rxBuffer = rxBuffer.slice(1);
+            continue;
+          }
+
+          const type = rxBuffer[1];
+          if (type !== TYPE_TELEMETRY && type !== TYPE_ACK) {
+            rxBuffer = rxBuffer.slice(1);
+            continue;
+          }
+          const frame = rxBuffer.slice(0, FRAME_SIZE);
+          rxBuffer = rxBuffer.slice(FRAME_SIZE);
+          handleFrame(frame);
+        }
+      }
+
+      async function readLoop(activeReader) {
+        try {
+          while (true) {
+            const { value, done } = await activeReader.read();
+            if (done) break;
+            if (value) consumeBytes(value);
+          }
+        } catch (error) {
+          if (!disconnecting) {
+            setNotice(`串口读取中断：${error.message}。`, true);
+            setConnectionState("error", "连接中断");
+          }
+        } finally {
+          try { activeReader.releaseLock(); } catch (_) {}
+          if (reader === activeReader) reader = null;
+          if (port && !disconnecting) {
+            window.setTimeout(() => { void disconnectPort(false); }, 0);
+          }
+        }
+      }
+
+      async function connectPort() {
+        if (!("serial" in navigator)) {
+          setNotice("当前浏览器不支持 Web Serial。请使用桌面版 Chrome，并从 localhost 或 HTTPS 页面打开。", true);
+          return;
+        }
+        if (!window.isSecureContext) {
+          setNotice("串口访问需要安全上下文。请通过 http://localhost 或 HTTPS 打开此页面。", true);
+          return;
+        }
+
+        connectButton.disabled = true;
+        setNotice("请选择下位机 USB 转串口设备。", false);
+        let selectedPort = null;
+        try {
+          selectedPort = await navigator.serial.requestPort();
+          await selectedPort.open({ baudRate: 115200, dataBits: 8, stopBits: 1, parity: "none", flowControl: "none" });
+          port = selectedPort;
+          reader = port.readable.getReader();
+          writer = port.writable.getWriter();
+          writeQueue = Promise.resolve();
+          rxBuffer = new Uint8Array(0);
+          telemetryDesired = false;
+          telemetryRequestId++;
+          awaitingUserAck = false;
+          telemetryToggle.checked = false;
+          lastTelemetryAt = 0;
+          lastAckedGains = null;
+          latestTarget = null;
+          latestActual = null;
+          $("targetValue").textContent = "—";
+          $("actualValue").textContent = "—";
+          $("errorValue").textContent = "—";
+          updateGainState();
+          setConnectionState("connected", "串口已连接");
+          $("telemetryState").textContent = "遥测关闭";
+          setNotice("串口已连接。确认其他软件未占用该 COM 口；用遥测开关开始上传。", false);
+          updateControls();
+          readTask = readLoop(reader);
+        } catch (error) {
+          if (reader) {
+            try { reader.releaseLock(); } catch (_) {}
+          }
+          if (writer) {
+            try { writer.releaseLock(); } catch (_) {}
+          }
+          if (selectedPort) {
+            try { await selectedPort.close(); } catch (_) {}
+          }
+          port = null;
+          reader = null;
+          writer = null;
+          setConnectionState(error.name === "NotFoundError" ? "disconnected" : "error", error.name === "NotFoundError" ? "未连接" : "连接失败");
+          connectButton.disabled = false;
+          if (error.name !== "NotFoundError") setNotice(`串口连接失败：${error.message}`, true);
+          updateControls();
+        }
+      }
+
+      async function disconnectPort(sendDisable = true) {
+        if (!port || disconnecting) return;
+        disconnecting = true;
+        telemetryRequestId++;
+        stopHeartbeat();
+        telemetryDesired = false;
+        awaitingUserAck = false;
+        telemetryToggle.checked = false;
+        const activePort = port;
+        const activeReader = reader;
+        const activeWriter = writer;
+
+        if (sendDisable && activeWriter) {
+          try { await queueConfig(false, activeGains); } catch (_) {}
+        }
+        if (activeReader) {
+          try { await activeReader.cancel(); } catch (_) {}
+        }
+        if (readTask) {
+          try { await readTask; } catch (_) {}
+          readTask = null;
+        }
+        try { await writeQueue; } catch (_) {}
+        if (activeWriter) {
+          try { activeWriter.releaseLock(); } catch (_) {}
+        }
+        writer = null;
+        reader = null;
+        try { await activePort.close(); } catch (_) {}
+        if (port === activePort) port = null;
+        rxBuffer = new Uint8Array(0);
+        disconnecting = false;
+        setConnectionState("disconnected", "未连接");
+        if (telemetrySampleCount === 0) $("telemetryState").textContent = "等待串口连接";
+        else $("telemetryState").textContent = "串口已断开";
+        updateControls();
+        if (notice.textContent && !notice.classList.contains("error")) {
+          setNotice("串口已断开。下位机遥测心跳将在 1.5 秒内超时关闭。", false);
+        }
+      }
+
+      function resizeCanvas() {
+        const bounds = chart.getBoundingClientRect();
+        const ratio = Math.max(1, window.devicePixelRatio || 1);
+        chart.width = Math.round(bounds.width * ratio);
+        chart.height = Math.round(bounds.height * ratio);
+        ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+        drawChart();
+      }
+
+      function drawChart() {
+        const bounds = chart.getBoundingClientRect();
+        const width = bounds.width;
+        const height = bounds.height;
+        if (!width || !height) return;
+        const ratio = Math.max(1, window.devicePixelRatio || 1);
+        if (chart.width !== Math.round(width * ratio) || chart.height !== Math.round(height * ratio)) {
+          chart.width = Math.round(width * ratio);
+          chart.height = Math.round(height * ratio);
+        }
+        ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+
+        const left = 47;
+        const right = width - 12;
+        const top = 13;
+        const bottom = height - 27;
+        const plotWidth = Math.max(1, right - left);
+        const plotHeight = Math.max(1, bottom - top);
+        const now = chartPaused && samples.length ? samples[samples.length - 1].time : performance.now();
+        const start = now - CHART_WINDOW_MS;
+        const visible = samples.filter((sample) => sample.time >= start);
+        let extent = 1;
+        for (const sample of visible) extent = Math.max(extent, Math.abs(sample.target), Math.abs(sample.actual));
+        extent = Math.max(1, Math.ceil(extent * 2) / 2);
+
+        ctx.font = "11px ui-monospace, SFMono-Regular, Consolas, monospace";
+        ctx.textAlign = "right";
+        ctx.textBaseline = "middle";
+        for (let step = -2; step <= 2; step++) {
+          const value = extent * step / 2;
+          const y = top + (2 - step) / 4 * plotHeight;
+          ctx.beginPath();
+          ctx.moveTo(left, y);
+          ctx.lineTo(right, y);
+          ctx.strokeStyle = step === 0 ? "#35475f" : "#263549";
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          ctx.fillStyle = "#7889a0";
+          ctx.fillText(value.toFixed(1), left - 8, y);
+        }
+        for (let step = 0; step <= 2; step++) {
+          const x = left + plotWidth * step / 2;
+          ctx.beginPath();
+          ctx.moveTo(x, top);
+          ctx.lineTo(x, bottom);
+          ctx.strokeStyle = "#202d40";
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          ctx.fillStyle = "#7889a0";
+          ctx.textAlign = step === 0 ? "left" : step === 2 ? "right" : "center";
+          ctx.textBaseline = "top";
+          ctx.fillText(`${(step * 5 - 10).toFixed(0)} s`, x, bottom + 9);
+        }
+
+        const plotLine = (key, color) => {
+          if (visible.length < 1) return;
+          ctx.beginPath();
+          visible.forEach((sample, index) => {
+            const x = left + Math.max(0, Math.min(1, (sample.time - start) / CHART_WINDOW_MS)) * plotWidth;
+            const y = top + ((extent - sample[key]) / (extent * 2)) * plotHeight;
+            if (index === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          });
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.lineJoin = "round";
+          ctx.lineCap = "round";
+          ctx.shadowColor = color + "55";
+          ctx.shadowBlur = 7;
+          ctx.stroke();
+          ctx.shadowBlur = 0;
+        };
+        plotLine("target", "#55b7ff");
+        plotLine("actual", "#49ddb0");
+
+        if (visible.length === 0) {
+          ctx.fillStyle = "#7889a0";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.font = "13px system-ui, sans-serif";
+          ctx.fillText("开启调参遥测后，角速度曲线将在这里显示", left + plotWidth / 2, top + plotHeight / 2);
+        }
+      }
+
+      function exportCsv() {
+        if (recordedSamples.length === 0) {
+          setNotice("当前没有曲线数据可导出。", true);
+          return;
+        }
+        const rows = ["timestamp,theoretical_rad_s,actual_rad_s,error_rad_s"];
+        for (const sample of recordedSamples) {
+          rows.push(`${sample.timestamp},${sample.target.toFixed(6)},${sample.actual.toFixed(6)},${sample.error.toFixed(6)}`);
+        }
+        const blob = new Blob(["\uFEFF", rows.join("\r\n")], { type: "text/csv;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `yaw-rate-${new Date().toISOString().replaceAll(":", "-")}.csv`;
+        link.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        setNotice(`已导出 ${recordedSamples.length} 个采样点（最多保留最近 1 小时）。`, false);
+      }
+
+      connectButton.addEventListener("click", () => { void connectPort(); });
+      disconnectButton.addEventListener("click", () => { void disconnectPort(true); });
+      applyButton.addEventListener("click", async () => {
+        try {
+          const gains = gainsFromInputs();
+          activeGains = gains;
+          awaitingUserAck = true;
+          setNotice(`正在应用 Kp=${gains.kp.toFixed(3)}、Ki=${gains.ki.toFixed(3)}，等待下位机确认。`, false);
+          await queueConfig(telemetryDesired, gains);
+        } catch (error) {
+          setNotice(error.message, true);
+        }
+      });
+      telemetryToggle.addEventListener("change", async () => {
+        if (!port) {
+          telemetryToggle.checked = false;
+          return;
+        }
+        const requestId = ++telemetryRequestId;
+        try {
+          telemetryDesired = telemetryToggle.checked;
+          if (telemetryDesired) {
+            const gains = gainsFromInputs();
+            activeGains = gains;
+            awaitingUserAck = true;
+            setNotice("正在开启遥测并发送 PI 参数，等待下位机确认。", false);
+            await queueConfig(true, gains);
+            if (requestId !== telemetryRequestId || !telemetryDesired) return;
+            startHeartbeat();
+            $("telemetryState").textContent = "正在等待遥测数据";
+          } else {
+            stopHeartbeat();
+            awaitingUserAck = true;
+            setNotice("正在关闭遥测，等待下位机确认。", false);
+            await queueConfig(false, activeGains);
+            if (requestId !== telemetryRequestId || telemetryDesired) return;
+            $("telemetryState").textContent = "遥测已关闭";
+          }
+        } catch (error) {
+          if (requestId !== telemetryRequestId) return;
+          telemetryDesired = false;
+          telemetryToggle.checked = false;
+          stopHeartbeat();
+          setNotice(error.message, true);
+        }
+      });
+      pauseButton.addEventListener("click", () => {
+        chartPaused = !chartPaused;
+        pauseButton.textContent = chartPaused ? "继续曲线" : "暂停曲线";
+      });
+      $("clearButton").addEventListener("click", () => {
+        samples = [];
+        recordedSamples = [];
+        telemetrySampleCount = 0;
+        chartPaused = false;
+        pauseButton.textContent = "暂停曲线";
+        $("telemetryState").textContent = port ? (telemetryDesired ? "等待遥测数据" : "遥测已关闭") : "等待串口连接";
+        updateControls();
+        drawChart();
+      });
+      $("csvButton").addEventListener("click", exportCsv);
+      window.addEventListener("resize", resizeCanvas);
+      window.addEventListener("beforeunload", () => {
+        stopHeartbeat();
+        if (writer && port) {
+          try { void queueConfig(false); } catch (_) {}
+        }
+      });
+
+      if ("serial" in navigator) {
+        navigator.serial.addEventListener("disconnect", (event) => {
+          if (port && event.target === port) {
+            setNotice("USB 串口设备已断开；下位机将在心跳超时后停止上传。", true);
+            void disconnectPort(false);
+          }
+        });
+      } else {
+        setNotice("当前浏览器不支持 Web Serial。请使用桌面版 Chrome，并通过 localhost 或 HTTPS 打开。", true);
+      }
+
+      updateControls();
+      updateGainState();
+      resizeCanvas();
+      window.setInterval(() => {
+        if (telemetryDesired && lastTelemetryAt && performance.now() - lastTelemetryAt > 1200) {
+          $("telemetryState").textContent = "等待遥测数据";
+        }
+        drawChart();
+      }, 250);
+    })();
+  </script>
+</body>
+</html>
