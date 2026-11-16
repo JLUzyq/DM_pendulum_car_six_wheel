@@ -11,6 +11,7 @@
 #include "fdcan.h"
 #include "cmsis_os.h"
 #include "rc_sbus.h"
+#include "Chaiss_Communication.h"
 
 extern INS_t INS;
 
@@ -186,6 +187,7 @@ void Chassis_task(void)
     float yaw_rate_applied = 0.0f;
     float yaw_rate_imu_filt = 0.0f;
     float yaw_rate_integral = 0.0f;
+    Chaiss_YawRateTuningConfig_t yaw_rate_tuning;
     const float dt = (float)CHASSIS_TASK_PERIOD_MS / 1000.0f;
     unsigned char i;
 
@@ -201,7 +203,11 @@ void Chassis_task(void)
     {
         /* 第 1 步：读取 IMU。总航向角不会在 +/-PI 处跳变。 */
         chassis_move.yaw   = INS.YawTotalAngle;
-        chassis_move.d_yaw = INS.Gyro[2];
+        yaw_rate_imu_filt += IMU_YAW_RATE_LPF_ALPHA *
+                             (INS.Gyro[2] * IMU_YAW_RATE_SIGN -
+                              yaw_rate_imu_filt);
+        chassis_move.d_yaw = yaw_rate_imu_filt;
+        Chaiss_Communication_GetYawRateTuning(&yaw_rate_tuning);
 
         /* 第 2 步：六个电机反馈经轮径和安装方向换算为车体速度。 */
         for (i = 0u; i < (unsigned char)WHEEL_COUNT; i++)
@@ -262,7 +268,6 @@ void Chassis_task(void)
 
         if (chassis_move.start_flag != 0u)
         {
-            float yaw_rate_raw;
             float yaw_rate_correction;
 
             /*
@@ -270,11 +275,6 @@ void Chassis_task(void)
              * 前馈保证在误差为零时仍能维持目标转速；PI 只补偿打滑、
              * 左右负载差和模型误差。KI 默认关闭，先在低速下调 KP。
              */
-            yaw_rate_raw = INS.Gyro[2] * IMU_YAW_RATE_SIGN;
-            yaw_rate_imu_filt += IMU_YAW_RATE_LPF_ALPHA *
-                                 (yaw_rate_raw - yaw_rate_imu_filt);
-            chassis_move.d_yaw = yaw_rate_imu_filt;
-
             v_applied = ramp_to(v_applied, chassis_move.v_set,
                                 V_CMD_RAMP_MPS2 * dt);
             yaw_rate_applied = ramp_to(yaw_rate_applied,
@@ -287,8 +287,8 @@ void Chassis_task(void)
             yaw_rate_integral = clampf(yaw_rate_integral,
                                        YAW_RATE_INTEGRAL_LIMIT);
             yaw_rate_correction =
-                YAW_RATE_KP * chassis_move.yaw_rate_error +
-                YAW_RATE_KI * yaw_rate_integral;
+                yaw_rate_tuning.kp * chassis_move.yaw_rate_error +
+                yaw_rate_tuning.ki * yaw_rate_integral;
             yaw_rate_correction =
                 clampf(yaw_rate_correction,
                        YAW_RATE_CORRECTION_MAX_RADPS);
@@ -333,6 +333,11 @@ void Chassis_task(void)
 
         /* 摆臂平衡不依赖底盘行驶指令，始终由关节空间 VMC 闭环控制。 */
         suspension_vmc_update();
+
+        /* 任务上下文非阻塞仲裁配置确认与可选角速度遥测。 */
+        Chaiss_Communication_ProcessTx(HAL_GetTick(),
+                                       yaw_rate_applied,
+                                       yaw_rate_imu_filt);
 
         osDelay(CHASSIS_TASK_PERIOD_MS);
     }
