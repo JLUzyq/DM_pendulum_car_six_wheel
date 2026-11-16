@@ -24,7 +24,7 @@
 
 **Files:** 修改 `User/APP/Chaiss_Communication.h`、`User/APP/Chaiss_Communication.c`、`User/APP/vehicle_config.h`。
 
-- [x] 在 `vehicle_config.h` 定义 Kp/Ki 默认值和边界：默认沿用 `YAW_RATE_KP=0.30f`、`YAW_RATE_KI=0.00f`，允许 `KP 0..2`、`KI 0..1`。
+- [x] 在 `vehicle_config.h` 定义 Kp/Ki 默认值和边界：默认沿用 `YAW_RATE_KP=0.30f`、`YAW_RATE_KI=0.00f`，允许 `KP 0..10`、`KI 0..1`。
 - [x] 在通信头文件声明 14 字节调参帧常量、类型码（配置 `0x01`、遥测 `0x81`、写入确认 `0x82`、查询确认 `0x83`）、flags 常量、`Chaiss_YawRateTuningConfig_t` 及读配置/处理 TX API。
 - [x] 在通信实现中加入 Modbus CRC-16（初值 `0xFFFF`、多项式 `0xA001`），覆盖帧字节 1..10，CRC 低字节先发；加入小端 float 读写。
 - [x] 将流解析按首字节分派：旧帧仍要求 `0xA5`/`0x4A` 并沿用现有命令使能门控；调参帧要求 `0xC3`/`0x3C`、14 字节、合法 CRC，并独立于运动命令门控解析。未知首字节继续丢弃一个字节并重同步。
@@ -49,7 +49,7 @@
 - [x] 创建暗色单页，顶部显示连接状态、串口连接/断开按钮和独立遥测开关；显示理论值、实际值、误差及已确认生效的 Kp/Ki。
 - [x] 配置连接参数为 115200 baud、8 data bits、无校验、1 stop bit；在“连接串口”用户点击回调中调用 `navigator.serial.requestPort()`。不支持 Web Serial 时显示 Chrome/安全上下文提示。
 - [x] 用 `ReadableStream` 循环读取字节，允许任意分片/合帧；按 `C3` 头、14 字节固定长度、`3C` 尾和 CRC 校验后解析确认帧和遥测帧。CRC 错误、未知类型不更新 UI。
-- [x] 配置帧编码遵循 `C3 01 flags Kp[4] Ki[4] CRC[2] 3C`。启用遥测时设置 bit0+bit2 查询当前增益；关闭时只发 flags=0。500 ms 心跳只设置 bit0，不写入增益且不产生确认。用户点击应用时设置 bit1，并校验 Kp `0..2`/Ki `0..1`。页面按 `0x82`/`0x83` 区分写入确认和查询确认，待确认期间禁用另一个会产生确认帧的操作；与当前待确认类型不同的旧确认帧忽略。
+- [x] 配置帧编码遵循 `C3 01 flags Kp[4] Ki[4] CRC[2] 3C`。启用遥测时设置 bit0+bit2 查询当前增益；关闭时只发 flags=0。500 ms 心跳只设置 bit0，不写入增益且不产生确认。用户点击应用时设置 bit1，并校验 Kp `0..10`/Ki `0..1`。页面按 `0x82`/`0x83` 区分写入确认和查询确认，待确认期间禁用另一个会产生确认帧的操作；与当前待确认类型不同的旧确认帧忽略。
 - [x] 断开、串口读写异常或设备拔出时释放 reader/writer/port 锁，停止心跳和曲线更新，状态显示断开；MCU 由心跳超时自动停止上传。
 - [x] 用原生 Canvas 实时绘制最多最近 10 秒的理论值/实测值双线，标注时间和 rad/s；支持暂停/继续、清空曲线和 CSV 下载，CSV 列为时间戳、理论角速度、实际角速度、误差。
 
@@ -64,6 +64,6 @@
 
 ## 集成检查
 
-- [ ] 运行 `git diff --check`，确认新增改动无空白错误；在该 worktree 运行 `cmake --preset Debug`，再运行 `cmake --build --preset Debug`，确认 STM32 固件可以编译。
-- [ ] 不新增或运行测试套件；当前用户请求没有要求测试。
-- [ ] 检查最终 diff，确认 `Core/Src/freertos.c` 及 `绘图文件/` 中已有未提交用户修改未被纳入或覆盖。
+- [x] 运行 `git diff --check`，确认新增改动无空白错误；在该 worktree运行 `cmake --preset Debug`，再运行 `cmake --build --preset Debug`，确认 STM32 固件可以编译。
+- [x] 不新增或运行测试套件；当前用户请求没有要求测试。
+- [x] 检查最终 diff，确认 `Core/Src/freertos.c` 及 `绘图文件/` 中已有未提交用户修改未被纳入或覆盖。

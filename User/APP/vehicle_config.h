@@ -48,7 +48,7 @@
  * 建议架空车轮，从 0.5 起每次增加 0.2~0.3，再进行低速带载测试。
  * 当前 2.1 是厂家推荐起点，最终值需根据整车负载标定。
  */
-#define G36_VELOCITY_KD         (2.5f)
+#define G36_VELOCITY_KD         (3.0 f)
 
 /*
  * 出厂默认反馈 ID 为 MASTER_ID=0。本车已改用独立反馈 ID：
@@ -146,10 +146,10 @@ static const suspension_motor_config_t g_suspension_motor_config[SUSPENSION_MOTO
  * angular_z_cmd is kinematic feed-forward. The feedback term corrects slip
  * and unequal wheel loading. Start with KI=0 and tune KP at low speed.
  */
-#define YAW_RATE_KP                    (0.30f)
-#define YAW_RATE_KI                    (0.00f)
+#define YAW_RATE_KP                    (7.5f)
+#define YAW_RATE_KI                    (0.4f)
 #define YAW_RATE_KP_MIN                (0.0f)
-#define YAW_RATE_KP_MAX                (2.0f)
+#define YAW_RATE_KP_MAX                (10.0f)
 #define YAW_RATE_KI_MIN                (0.0f)
 #define YAW_RATE_KI_MAX                (1.0f)
 #define YAW_RATE_INTEGRAL_LIMIT        (0.50f)

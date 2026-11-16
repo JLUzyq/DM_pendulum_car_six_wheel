@@ -78,6 +78,18 @@ static inline float lpf_first_order(float prev, float input, float alpha)
   return prev + alpha * (input - prev);
 }
 
+/* 串口模式切换提示：两声短鸣，仅由模式切换事件调用。 */
+static void buzzer_beep_twice(void)
+{
+  Buzzer_Set(1u);
+  osDelay(100);
+  Buzzer_Set(0u);
+  osDelay(100);
+  Buzzer_Set(1u);
+  osDelay(100);
+  Buzzer_Set(0u);
+}
+
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void const * argument);
@@ -212,10 +224,11 @@ void StartDefaultTask(void const * argument)
     rc_sbus_update();
 
     {
-      rc_control_mode_e requested_mode = RC_CONTROL_DISABLED;
+      rc_control_mode_e requested_mode = active_control_mode;
 
       if (rc_sbus.online)
       {
+        /* 仅在收到有效 SBUS 数据时采样 CH8；遥控器掉线不清除已选模式。 */
         requested_mode = rc_control_mode_from_pwm(
             rc_sbus.ch_pwm[g_sbus_ch_map.control_mode]);
       }
@@ -227,6 +240,11 @@ void StartDefaultTask(void const * argument)
         active_control_mode = requested_mode;
         yaw_rate_cmd_filt = 0.0f;
         v_cmd_filt = 0.0f;
+
+        if (active_control_mode == RC_CONTROL_SERIAL)
+        {
+          buzzer_beep_twice();
+        }
       }
 
       if (active_control_mode == RC_CONTROL_DISABLED)
@@ -243,15 +261,26 @@ void StartDefaultTask(void const * argument)
 
       if (active_control_mode == RC_CONTROL_SERIAL)
       {
-        /* CH8 中置：只打开 USART1 指令入口，忽略 SBUS 摇杆。 */
+        /* 串口档保持锁存；即使遥控器掉线，也持续接收并接受 USART1 指令。 */
         Chaiss_Communication_SetCommandEnabled(1u);
         (void)Chaiss_Communication_IsOnline();
         osDelay(10);
         continue;
       }
 
-      /* CH8 上拨：关闭 USART1 指令入口，只发布 SBUS 遥控指令。 */
+      /* 遥控档关闭 USART1 指令入口，只发布 SBUS 遥控指令。 */
       Chaiss_Communication_SetCommandEnabled(0u);
+
+      if (rc_sbus.online == 0u)
+      {
+        /* 保持遥控档选择，但遥控器掉线时立即停车并关闭安全门。 */
+        chassis_command_set_safety_enabled(0u);
+        chassis_command_stop(CHASSIS_CMD_RC);
+        osDelay(10);
+        continue;
+      }
+
+      chassis_command_set_safety_enabled(1u);
 
       /* CH1 -> angular_z；不再积分为目标航向角。 */
       {
