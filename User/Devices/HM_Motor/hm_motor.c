@@ -77,13 +77,16 @@ void hm_motor_send_mit(hcan_t *hcan, unsigned short motor_id,
     canx_send_data(hcan, motor_id, data, 8u);
 }
 
-void hm_motor_send_velocity(hcan_t *hcan, unsigned short motor_id, float vel)
+void hm_motor_send_velocity(hcan_t *hcan, unsigned short motor_id,
+                            float vel, float torque_ff)
 {
     /*
      * MIT 纯速度模式：Kp=0 关闭位置环；Kd 与 V_des 构成速度调节；
-     * T_ff=0 表示不加前馈力矩。此 Kd 与整车 IMU 角速度闭环参数无关。
+     * torque_ff 是外部轮速误差积分得到的 T_ff。此 Kd 与整车 IMU
+     * 角速度闭环参数无关。
      */
-    hm_motor_send_mit(hcan, motor_id, 0.0f, vel, 0.0f, G36_VELOCITY_KD, 0.0f);
+    hm_motor_send_mit(hcan, motor_id, 0.0f, vel, 0.0f,
+                      G36_VELOCITY_KD, torque_ff);
 }
 
 void hm_motor_send_relax(hcan_t *hcan, unsigned short motor_id)

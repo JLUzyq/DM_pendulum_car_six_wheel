@@ -47,8 +47,9 @@ void hm_motor_encode_mit(uint8_t data[8],
 void hm_motor_send_mit(hcan_t *hcan, unsigned short motor_id,
                        float pos, float vel, float kp, float kd, float tor);
 
-/* MIT 速度模式：P_des=0、Kp=0、T_ff=0，Kd 取 G36_VELOCITY_KD */
-void hm_motor_send_velocity(hcan_t *hcan, unsigned short motor_id, float vel);
+/* MIT 速度模式：P_des=0、Kp=0，Kd/T_ff 由速度控制器给定 */
+void hm_motor_send_velocity(hcan_t *hcan, unsigned short motor_id,
+                            float vel, float torque_ff);
 
 /* 全零指令：Kp=Kd=0、V=0、T=0，电机处于放松状态但仍回传反馈 */
 void hm_motor_send_relax(hcan_t *hcan, unsigned short motor_id);

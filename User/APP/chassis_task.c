@@ -183,6 +183,7 @@ void Chassis_task(void)
 {
     float motor_vel[WHEEL_COUNT];
     float motor_speed[WHEEL_COUNT];
+    float wheel_tau_ff[WHEEL_COUNT] = {0.0f};
     float v_applied = 0.0f; /* 经过斜坡限制后的线速度指令 */
     float yaw_rate_applied = 0.0f;
     float yaw_rate_imu_filt = 0.0f;
@@ -305,9 +306,33 @@ void Chassis_task(void)
 
             for (i = 0u; i < (unsigned char)WHEEL_COUNT; i++)
             {
+                uint32_t now_ms = HAL_GetTick();//读取当前时间
+                HM_Motor_t *motor = &chassis_move.motor[i];//通过指针读取电机的数据
+                float torque_ff = 0.0f;
+
+                /* 速度目标和反馈均是对应电机轴方向的 rad/s。 */
+                if (motor_speed[i] == 0.0f)
+                {
+                    wheel_tau_ff[i] = 0.0f;
+                }
+                else if ((motor->last_rx_ms != 0u) &&
+                         ((now_ms - motor->last_rx_ms) <= WHEEL_FEEDBACK_TIMEOUT_MS))//通过相邻判断采样时间是否超时，并确定相邻的两次采样的真实时间
+                {
+                    float speed_error = motor_speed[i] - motor->vel;
+                    wheel_tau_ff[i] += G36_VELOCITY_KI * speed_error * dt;
+                    wheel_tau_ff[i] = clampf(wheel_tau_ff[i],
+                                             0.50f*G36_VELOCITY_TAU_FF_MAX);
+                    torque_ff = wheel_tau_ff[i];
+                }
+                else
+                {
+                    /* 反馈无效时撤掉该轮补偿，避免旧值继续施加力矩。 */
+                    wheel_tau_ff[i] = 0.0f;
+                }
+
                 hm_motor_send_velocity(bus_handle(g_wheel_motor_config[i].bus),
                                        g_wheel_motor_config[i].can_id,
-                                       motor_speed[i]);
+                                       motor_speed[i], torque_ff);
             }
         }
         else
@@ -319,6 +344,10 @@ void Chassis_task(void)
             v_applied = 0.0f;
             yaw_rate_applied = 0.0f;
             yaw_rate_integral = 0.0f;
+            for (i = 0u; i < (unsigned char)WHEEL_COUNT; i++)
+            {
+                wheel_tau_ff[i] = 0.0f;
+            }
             chassis_move.yaw_rate_error = 0.0f;
             chassis_move.yaw_rate_control = 0.0f;
             chassis_move.v_set = 0.0f;
